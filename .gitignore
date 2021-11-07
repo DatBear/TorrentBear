@@ -1,0 +1,8 @@
+*.msi
+*.user
+obj/
+bin/
+UpgradeLog.htm
+packages/
+.vs/
+TorrentBear.Samples/
