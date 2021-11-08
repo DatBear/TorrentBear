@@ -29,7 +29,7 @@ namespace TorrentBear.Service
                 _requests.Add(new RequestMessage(piece, i, requestLength), SendState.NotSent);
             }
 
-            if (i + requestLength > pieceSize)
+            if (i + requestLength > pieceSize && i < pieceSize)
             {
                 _requests.Add(new RequestMessage(piece, i, (int)(pieceSize - i)), SendState.NotSent);
             }

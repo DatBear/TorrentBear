@@ -137,6 +137,12 @@ namespace TorrentBear.Service
                             }
                         }
 
+                        if (!state.IsInterested || state.IsChoked)
+                        {
+                            Thread.Sleep(50);
+                            continue;
+                        }
+
                         if ((state.PieceManager?.ShouldSendRequest ?? true) && state.IsInterested && !state.IsChoked)
                         {
                             var exceptPieces = _connections.Values
@@ -236,7 +242,7 @@ namespace TorrentBear.Service
                 }
             }
 
-            while (except.Contains(interest[0])) interest.Remove(0);
+            while (except.Contains(interest[0]) && interest.Count > except.Length) interest.Remove(0);
             var interestArray = interest.ToArray();
             r.Shuffle(interestArray);
 

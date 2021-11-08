@@ -255,7 +255,7 @@ namespace TorrentBear.Service
 
         private void HandleBitfield(byte type, List<byte> data)
         {
-            BitArray bitArray = new BitArray(data.GetRange(4, data.Count - 5).ToArray());
+            BitArray bitArray = new BitArray(data.GetRange(5, data.Count - 5).ToArray());
             Bitfield = bitArray;
         }
 
