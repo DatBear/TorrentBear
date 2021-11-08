@@ -144,8 +144,10 @@ namespace TorrentBear.Service
                                 .Where(x => x >= 0).ToArray();
                             var random = GetRandomInterest(peer.Bitfield, exceptPieces);
 
-                            state.PieceManager ??= new PieceManager(random, RequestMessage.DefaultRequestLength,
-                                _torrent.PieceSize);
+                            var pieceSize = random == _torrent.NumberOfPieces - 1
+                                ? _torrent.TotalSize % _torrent.PieceSize
+                                : _torrent.PieceSize;
+                            state.PieceManager ??= new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
                             var request = state.PieceManager.GetNextRequest();
                             if (request != null)
                             {
@@ -154,13 +156,15 @@ namespace TorrentBear.Service
                         }
                         else if (state.PieceManager?.IsPieceComplete ?? false)
                         {
-                            var torrentPieceHash = _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
+                            var torrentPieceHash =
+                                _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
                             var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
                             var pieceHash = sha1.ComputeHash(pieceBytes);
                             if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
                             {
                                 WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
-                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece, true);
+                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece,
+                                    true);
                                 var fileSha = sha1.ComputeHash(filePieceBytes);
                                 if (Utils.SequenceEqual(fileSha, torrentPieceHash))
                                 {
@@ -185,8 +189,9 @@ namespace TorrentBear.Service
         {
             Log($"received request {request.Index}:{request.Begin}");
             var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
-            var block = new byte[request.RequestedLength];
-            Buffer.BlockCopy(piece, request.Begin, block, 0, Math.Min(request.RequestedLength, piece.Length));
+            var length = Math.Min(request.RequestedLength, piece.Length - request.Begin);
+            var block = new byte[length];
+            Buffer.BlockCopy(piece, request.Begin, block, 0, block.Length);
             var msg = new PieceMessage(request.Index, request.Begin, block);
             SendPiece(sender, msg);
         }
@@ -347,7 +352,7 @@ namespace TorrentBear.Service
             return true;
         }
 
-        
+
         private byte[] GetPiece(Torrent torrent, string downloadDirectory, int piece, bool skipCache = false)
         {
             var cacheKey = $"piece_{piece}";
@@ -358,6 +363,7 @@ namespace TorrentBear.Service
                     return (byte[])_pieceCache.Get(cacheKey);
                 }
             }
+
             var pieceSize = torrent.PieceSize;
             var files = torrent.Files;
             var offset = pieceSize * piece;
@@ -390,7 +396,7 @@ namespace TorrentBear.Service
             }
 
             Array.Resize(ref buffer, totalBytesRead);
-            
+
             _pieceCache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromMinutes(1)));
             return buffer.ToArray();
         }

@@ -13,11 +13,11 @@ namespace TorrentBear.Data.Message.Peer
         public int Begin { get; }
         public int RequestedLength { get; }
 
-        public RequestMessage(int index, int begin)
+        public RequestMessage(int index, int begin, int? requestedLength = null)
         {
             Index = index;
             Begin = begin;
-            RequestedLength = DefaultRequestLength;
+            RequestedLength = requestedLength ?? DefaultRequestLength;
         }
 
         public override byte[] GetBytes()

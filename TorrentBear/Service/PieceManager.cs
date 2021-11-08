@@ -23,9 +23,15 @@ namespace TorrentBear.Service
             _pieceSize = pieceSize;
             Stream = new MemoryStream();
             _requests = new Dictionary<RequestMessage, SendState>();
-            for (var i = 0; i <= pieceSize - requestLength; i += requestLength)
+            int i;
+            for (i = 0; i + requestLength <= pieceSize; i += requestLength)
             {
-                _requests.Add(new RequestMessage(piece, i), SendState.NotSent);
+                _requests.Add(new RequestMessage(piece, i, requestLength), SendState.NotSent);
+            }
+
+            if (i + requestLength > pieceSize)
+            {
+                _requests.Add(new RequestMessage(piece, i, (int)(pieceSize - i)), SendState.NotSent);
             }
         }
 
@@ -43,25 +49,16 @@ namespace TorrentBear.Service
             var request = _requests.FirstOrDefault(x => x.Key.Index == msg.Index && x.Key.Begin == msg.Begin).Key;
             if (request != null)
             {
-                lock (_requests)
-                {
-                    _requests[request] = SendState.Received;
-                }
+                _requests[request] = SendState.Received;
             }
-            IsRequestComplete = true;
         }
 
         public RequestMessage GetNextRequest()
         {
-            if (_requests.Values.Count(x => x == SendState.Sent) >= MaxQueueLength) return null;//!ShouldSendRequest?
+            if (!ShouldSendRequest) return null;
 
-            var unsent = _requests.Where(x => x.Value == SendState.NotSent).Select(x => x.Key);
-            if (unsent.Any())
-            {
-                return unsent.First();
-            }
-
-            return null;
+            var unsent = UnsentRequests;
+            return unsent.Any() ? unsent.First() : null;
         }
 
 
@@ -72,17 +69,5 @@ namespace TorrentBear.Service
             .Select(x => x.Key).ToList();
 
         public bool ShouldSendRequest => PendingRequests.Count < MaxQueueLength && UnsentRequests.Any();
-
-        private RequestMessage _currentRequestMessage;
-        public RequestMessage CurrentRequestMessage
-        {
-            get => _currentRequestMessage;
-            set
-            {
-                IsRequestComplete = false;
-                _currentRequestMessage = value;
-            }
-        }
-        public bool IsRequestComplete { get; private set; }
     }
 }
