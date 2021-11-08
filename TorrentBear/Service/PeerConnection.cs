@@ -18,12 +18,23 @@ namespace TorrentBear.Service
     //todo separate reader + handler
     public class PeerConnection
     {
-        public volatile byte[] PeerId;
-        public IPEndPoint Endpoint { get; set; }
-        public TcpClient Client { get; set; }
-        public BitArray Bitfield { get; set; }
-        public PeerHandshakeState HandshakeState { get; set; }
-        public PeerConnectionState ConnectionState { get; set; }
+        private byte[] _peerId;
+        public byte[] PeerId
+        {
+            get => _peerId;
+            set
+            {
+                _peerId = value;
+                PeerIdString = BitConverter.ToString(value).Replace("-", string.Empty);
+            }
+        }
+
+        public string PeerIdString { get; private set; }
+        public IPEndPoint Endpoint { get; private set; }
+        public TcpClient Client { get; private set; }
+        public BitArray Bitfield { get; private set; }
+        public PeerHandshakeState HandshakeState { get; private set; }
+        public PeerConnectionState ConnectionState { get; private set; }
         
 
         private byte[] _infoHash;
@@ -49,12 +60,7 @@ namespace TorrentBear.Service
             Task.Run(HandlePacketThread);
             Task.Run(KeepAliveThread);
         }
-
-        public void Start()
-        {
-            
-        }
-
+        
         private void KeepAliveThread()
         {
             while (Client.Connected)

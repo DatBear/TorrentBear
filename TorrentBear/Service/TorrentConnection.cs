@@ -29,7 +29,7 @@ namespace TorrentBear.Service
         private byte[] _peerId;
         private BitArray _bitfield;
         private bool _hasAllPieces;
-        private MemoryCache _pieceCache;
+        private MemoryCache _cache;
 
         public TorrentConnection(string name, int port, List<IPEndPoint> peers, string torrentFilePath,
             string downloadPath)
@@ -43,7 +43,7 @@ namespace TorrentBear.Service
             var parser = new BencodeParser();
             _torrent = parser.Parse<Torrent>(torrentFilePath);
             _downloadDirectory = downloadPath;
-            _pieceCache = MemoryCache.Default;
+            _cache = MemoryCache.Default;
 
             CreateFiles(_torrent, downloadPath);
             _bitfield = GetBitfield(_torrent, downloadPath);
@@ -93,7 +93,6 @@ namespace TorrentBear.Service
 
         private void SetupConnection(PeerConnection conn)
         {
-            conn.Start();
             SendHandshake(conn);
             SendBitfield(conn);
             conn.Request += Connection_OnRequest;
@@ -113,7 +112,7 @@ namespace TorrentBear.Service
                     var state = kvp.Value;
                     if (peer.Bitfield != null)
                     {
-                        var hasInterest = CheckInterest(peer.Bitfield);
+                        var hasInterest = CheckInterest(peer.PeerIdString, peer.Bitfield);
                         if (hasInterest != state.IsInterested)
                         {
                             if (hasInterest)
@@ -139,11 +138,11 @@ namespace TorrentBear.Service
 
                         if (!state.IsInterested || state.IsChoked)
                         {
-                            Thread.Sleep(50);
+                            Thread.Sleep(500);
                             continue;
                         }
 
-                        if ((state.PieceManager?.ShouldSendRequest ?? true) && state.IsInterested && !state.IsChoked)
+                        if (state.PieceManager == null)
                         {
                             var exceptPieces = _connections.Values
                                 .Select(x => x.PieceManager?.Piece ?? -1)
@@ -153,14 +152,25 @@ namespace TorrentBear.Service
                             var pieceSize = random == _torrent.NumberOfPieces - 1
                                 ? _torrent.TotalSize % _torrent.PieceSize
                                 : _torrent.PieceSize;
-                            state.PieceManager ??= new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
+                            if (random >= 0)
+                            {
+                                state.PieceManager = new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
+                            }
+                            else
+                            {
+                                continue;
+                            }
+                        }
+
+                        if ((state.PieceManager.ShouldSendRequest) && state.IsInterested && !state.IsChoked)
+                        {
                             var request = state.PieceManager.GetNextRequest();
                             if (request != null)
                             {
                                 state.PieceManager.SendRequest(peer, request);
                             }
                         }
-                        else if (state.PieceManager?.IsPieceComplete ?? false)
+                        else if (state.PieceManager.IsPieceComplete)
                         {
                             var torrentPieceHash =
                                 _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
@@ -182,6 +192,11 @@ namespace TorrentBear.Service
                                 {
                                     //error writing to file
                                 }
+                            }
+                            else
+                            {
+                                //error downloading piece
+                                state.PieceManager = null;//restart piece download
                             }
                         }
                     }
@@ -214,18 +229,22 @@ namespace TorrentBear.Service
             return _connections.FirstOrDefault(x => x.Key == conn).Value;
         }
 
-        private bool CheckInterest(BitArray bitfield)
+        private bool CheckInterest(string peerId, BitArray bitfield, bool skipCache = false)
         {
+            var cacheKey = $"interest_{peerId}";
+            if (_cache.Contains(cacheKey) && !skipCache) return (bool)_cache.Get(cacheKey);
             if (_hasAllPieces) return false;
             if (_bitfield.Length != bitfield.Length) return false;
             for (var i = 0; i < bitfield.Length; i++)
             {
                 if (!_bitfield.Get(i) && bitfield.Get(i))
                 {
+                    _cache.Set(cacheKey, true, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(10)));
                     return true;
                 }
             }
 
+            _cache.Set(cacheKey, false, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(10)));
             return false;
         }
 
@@ -242,11 +261,10 @@ namespace TorrentBear.Service
                 }
             }
 
-            while (except.Contains(interest[0]) && interest.Count > except.Length) interest.Remove(0);
+            while (interest.Any() && except.Contains(interest[0])) interest.Remove(interest[0]);
             var interestArray = interest.ToArray();
             r.Shuffle(interestArray);
-
-            return interestArray[0];
+            return interestArray.Any() ? interestArray[0] : -1;
         }
 
 
@@ -364,9 +382,9 @@ namespace TorrentBear.Service
             var cacheKey = $"piece_{piece}";
             if (!skipCache)
             {
-                if (_pieceCache.Contains(cacheKey))
+                if (_cache.Contains(cacheKey))
                 {
-                    return (byte[])_pieceCache.Get(cacheKey);
+                    return (byte[])_cache.Get(cacheKey);
                 }
             }
 
@@ -403,7 +421,7 @@ namespace TorrentBear.Service
 
             Array.Resize(ref buffer, totalBytesRead);
 
-            _pieceCache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromMinutes(1)));
+            _cache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromMinutes(1)));
             return buffer.ToArray();
         }
 

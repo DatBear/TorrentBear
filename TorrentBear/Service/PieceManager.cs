@@ -1,7 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.Caching;
 using TorrentBear.Data.Message.Peer;
 using TorrentBear.Enum;
 
@@ -13,25 +15,26 @@ namespace TorrentBear.Service
         public int Piece { get; set; }
         public Stream Stream { get; set; }
         private long _pieceSize;
-        public bool IsPieceComplete => Stream.Length >= _pieceSize && _requests.All(x => x.Value == SendState.Received);
+        public bool IsPieceComplete => Stream.Length >= _pieceSize && _requests.All(x => x.Value);
 
-        private Dictionary<RequestMessage, SendState> _requests;
+        private Dictionary<RequestMessage, bool> _requests;
+        private MemoryCache _pendingRequestCache = MemoryCache.Default;
 
         public PieceManager(int piece, int requestLength, long pieceSize)
         {
             Piece = piece;
             _pieceSize = pieceSize;
             Stream = new MemoryStream();
-            _requests = new Dictionary<RequestMessage, SendState>();
+            _requests = new Dictionary<RequestMessage, bool>();
             int i;
             for (i = 0; i + requestLength <= pieceSize; i += requestLength)
             {
-                _requests.Add(new RequestMessage(piece, i, requestLength), SendState.NotSent);
+                _requests.Add(new RequestMessage(piece, i, requestLength), false);
             }
 
             if (i + requestLength > pieceSize && i < pieceSize)
             {
-                _requests.Add(new RequestMessage(piece, i, (int)(pieceSize - i)), SendState.NotSent);
+                _requests.Add(new RequestMessage(piece, i, (int)(pieceSize - i)), false);
             }
         }
 
@@ -39,7 +42,7 @@ namespace TorrentBear.Service
         {
             Debug.WriteLine($"sending request for {request.Index}:{request.Begin}");
             conn.Write(request.GetBytes());
-            _requests[request] = SendState.Sent;
+            _pendingRequestCache.Set($"request_{request.Index}:{request.Begin}", request, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(10)));
         }
 
         public void Write(PieceMessage msg)
@@ -49,7 +52,8 @@ namespace TorrentBear.Service
             var request = _requests.FirstOrDefault(x => x.Key.Index == msg.Index && x.Key.Begin == msg.Begin).Key;
             if (request != null)
             {
-                _requests[request] = SendState.Received;
+                _pendingRequestCache.Remove($"request_{msg.Index}:{msg.Begin}");
+                _requests[request] = true;
             }
         }
 
@@ -63,10 +67,13 @@ namespace TorrentBear.Service
 
 
         private List<RequestMessage> UnsentRequests =>
-            _requests.Where(x => x.Value == SendState.NotSent).Select(x => x.Key).ToList();
+            _requests.Where(x => !x.Value).Select(x => x.Key)
+                .Where(x => !_pendingRequestCache.Contains($"request_{x.Index}:{x.Begin}"))
+                .ToList();
 
-        public List<RequestMessage> PendingRequests => _requests.Where(x => x.Value == SendState.Sent)
-            .Select(x => x.Key).ToList();
+        public List<RequestMessage> PendingRequests => _requests.Select(x => x.Key)
+            .Where(x => _pendingRequestCache.Contains($"request_{x.Index}:{x.Begin}"))
+            .ToList();
 
         public bool ShouldSendRequest => PendingRequests.Count < MaxQueueLength && UnsentRequests.Any();
     }
