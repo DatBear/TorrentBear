@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.Caching;
 using System.Threading;
 using System.Threading.Tasks;
 using BencodeNET.Parsing;
@@ -28,6 +29,7 @@ namespace TorrentBear.Service
         private byte[] _peerId;
         private BitArray _bitfield;
         private bool _hasAllPieces;
+        private MemoryCache _pieceCache;
 
         public TorrentConnection(string name, int port, List<IPEndPoint> peers, string torrentFilePath,
             string downloadPath)
@@ -41,6 +43,7 @@ namespace TorrentBear.Service
             var parser = new BencodeParser();
             _torrent = parser.Parse<Torrent>(torrentFilePath);
             _downloadDirectory = downloadPath;
+            _pieceCache = MemoryCache.Default;
 
             CreateFiles(_torrent, downloadPath);
             _bitfield = GetBitfield(_torrent, downloadPath);
@@ -157,7 +160,7 @@ namespace TorrentBear.Service
                             if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
                             {
                                 WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
-                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece);
+                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece, true);
                                 var fileSha = sha1.ComputeHash(filePieceBytes);
                                 if (Utils.SequenceEqual(fileSha, torrentPieceHash))
                                 {
@@ -275,13 +278,6 @@ namespace TorrentBear.Service
             conn.Write(bytes);
         }
 
-        //void SendRequest(PeerConnection conn, RequestMessage request)
-        //{
-        //    Log($"sending request for {request.Index}:{request.Begin}");
-        //    var bytes = request.GetBytes();
-        //    conn.Write(bytes);
-        //}
-
         void SendPiece(PeerConnection conn, PieceMessage piece)
         {
             Log($"sending piece {piece.Index}:{piece.Begin}");
@@ -351,8 +347,17 @@ namespace TorrentBear.Service
             return true;
         }
 
-        private byte[] GetPiece(Torrent torrent, string downloadDirectory, int piece)
+        
+        private byte[] GetPiece(Torrent torrent, string downloadDirectory, int piece, bool skipCache = false)
         {
+            var cacheKey = $"piece_{piece}";
+            if (!skipCache)
+            {
+                if (_pieceCache.Contains(cacheKey))
+                {
+                    return (byte[])_pieceCache.Get(cacheKey);
+                }
+            }
             var pieceSize = torrent.PieceSize;
             var files = torrent.Files;
             var offset = pieceSize * piece;
@@ -385,6 +390,8 @@ namespace TorrentBear.Service
             }
 
             Array.Resize(ref buffer, totalBytesRead);
+            
+            _pieceCache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromMinutes(1)));
             return buffer.ToArray();
         }
 
