@@ -5,8 +5,8 @@ namespace TorrentBear.Data.Message.Peer
 {
     public class BasePeerMessage
     {
-        public virtual int Length { get; set; }
-        public virtual byte Type { get; set; }
+        public virtual int Length { get; protected set; }
+        public virtual byte Type { get; protected set; }
 
         public virtual byte[] GetBytes()
         {

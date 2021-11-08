@@ -7,9 +7,9 @@ namespace TorrentBear.Data.Message.Peer
     public class PieceMessage : BasePeerMessage
     {
         public override byte Type => (byte)PeerMessageType.Piece;
-        public int Index { get; set; }
-        public int Begin { get; set; }
-        public byte[] Block { get; set; }
+        public int Index { get;  }
+        public int Begin { get; }
+        public byte[] Block { get; }
 
         public PieceMessage(int index, int begin, byte[] block)
         {

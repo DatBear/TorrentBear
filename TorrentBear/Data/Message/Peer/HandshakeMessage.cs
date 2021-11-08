@@ -7,9 +7,7 @@ namespace TorrentBear.Data.Message.Peer
 {
     public class HandshakeMessage : BasePeerMessage
     {
-        private byte[] _infoHash;
-        private byte[] _peerId;
-        
+        public static int PacketLength => StartBytes().Length + 40;
         private static byte[] _startBytes;
         static HandshakeMessage()
         {
@@ -19,13 +17,14 @@ namespace TorrentBear.Data.Message.Peer
             _startBytes = bytes.ToArray();
         }
 
+        private byte[] _infoHash;
+        private byte[] _peerId;
+
         public static ReadOnlySpan<byte> StartBytes()
         {
             return _startBytes;
         }
-
-        public static int Length => StartBytes().Length + 40;
-
+        
         public HandshakeMessage(byte[] infoHash, byte[] peerId)
         {
             _infoHash = infoHash;

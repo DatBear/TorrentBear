@@ -8,7 +8,7 @@ namespace TorrentBear.Data.Message.Peer
     public class BitfieldMessage : BasePeerMessage
     {
         public override byte Type => (byte)PeerMessageType.Bitfield;
-        public BitArray Bitfield { get; set; }
+        public BitArray Bitfield { get; }
 
         public BitfieldMessage(BitArray bitfield)
         {

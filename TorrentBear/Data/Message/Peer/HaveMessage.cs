@@ -8,7 +8,7 @@ namespace TorrentBear.Data.Message.Peer
     {
         public override int Length => 5;
         public override byte Type => (byte)PeerMessageType.Have;
-        public int PieceIndex { get; set; }
+        public int PieceIndex { get; }
 
         public HaveMessage(int piece)
         {

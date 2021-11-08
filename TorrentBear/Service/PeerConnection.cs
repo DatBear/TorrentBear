@@ -61,7 +61,7 @@ namespace TorrentBear.Service
             {
                 Thread.Sleep(2*60*1000);
                 if (!Client.Connected) return;
-                Client.GetStream().WriteAsync(new KeepAliveMessage().GetBytes());
+                Client.GetStream().Write(new KeepAliveMessage().GetBytes());
             }
         }
 
@@ -96,7 +96,7 @@ namespace TorrentBear.Service
                         return;
                     }
 
-                    Thread.Sleep(100);
+                    Thread.Sleep(1);
                 }
 
                 while (stream.DataAvailable)
@@ -111,7 +111,7 @@ namespace TorrentBear.Service
                         packetLength = BitConverter.ToInt32(buffer.ToArray(), 0);
                     var handshakeStartLength = HandshakeMessage.StartBytes().Length;
                     var isHandshake = HandshakeState == PeerHandshakeState.PreHandshake &&
-                                      buffer.Count >= HandshakeMessage.Length &&
+                                      buffer.Count >= HandshakeMessage.PacketLength &&
                                       HandshakeMessage.StartBytes()
                                           .SequenceEqual(buffer.Take(handshakeStartLength).ToArray());
                     var isKeepAlive = buffer.Count >= 4 && packetLength == 0;
@@ -128,7 +128,7 @@ namespace TorrentBear.Service
 
                     //Log("received packet");
                     List<byte> packet =
-                        new List<byte>(buffer.GetRange(0, isHandshake ? HandshakeMessage.Length : packetLength + 4));
+                        new List<byte>(buffer.GetRange(0, isHandshake ? HandshakeMessage.PacketLength : packetLength + 4));
                     buffer.RemoveRange(0, packet.Count);
                     lock (_rxPackets)
                     {
@@ -149,12 +149,12 @@ namespace TorrentBear.Service
                     var packet = _txPackets.Dequeue();
                     Client.GetStream().Write(packet);
                 }
-                Thread.Sleep(10);
+                Thread.Sleep(1);
             }
         }
 
         public void Write(byte[] bytes)
-        {
+        { 
             _txPackets.Enqueue(bytes);
         }
 
@@ -163,16 +163,19 @@ namespace TorrentBear.Service
             while (Client.Connected)
             {
                 _packetsReady.WaitOne();
-                List<byte> packet;
-                lock (_rxPackets)
+                while (_rxPackets.Count > 0)
                 {
-                    packet = _rxPackets.Dequeue();
-                }
+                    List<byte> packet;
+                    lock (_rxPackets)
+                    {
+                        packet = _rxPackets.Dequeue();
+                    }
 
-                byte type = HandshakeState == PeerHandshakeState.PreHandshake && packet[0] == 19
-                    ? (byte)PeerMessageType.Handshake
-                    : packet[4];
-                DispatchPacket(type)(type, packet);
+                    byte type = HandshakeState == PeerHandshakeState.PreHandshake && packet[0] == 19
+                        ? (byte)PeerMessageType.Handshake
+                        : packet[4];
+                    DispatchPacket(type)(type, packet);
+                }
             }
         }
 

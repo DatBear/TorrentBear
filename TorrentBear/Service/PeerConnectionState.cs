@@ -8,33 +8,13 @@ namespace TorrentBear.Service
         public bool IsChoked
         {
             get => (PeerState & PeerState.Choked) > 0;
-            set
-            {
-                if (value)
-                {
-                    PeerState |= PeerState.Choked;
-                }
-                else
-                {
-                    PeerState &= ~PeerState.Choked;
-                }
-            }
+            set => PeerState = value ? PeerState | PeerState.Choked : PeerState & ~PeerState.Choked;
         }
 
         public bool IsInterested
         {
             get => (PeerState & PeerState.Interested) > 0;
-            set
-            {
-                if (value)
-                {
-                    PeerState |= PeerState.Interested;
-                }
-                else
-                {
-                    PeerState &= ~PeerState.Interested;
-                }
-            }
+            set => PeerState = value ? PeerState | PeerState.Interested : PeerState & ~PeerState.Interested;
         } 
     }
 }

@@ -97,28 +97,6 @@ namespace TorrentBear.Service
             conn.Piece += Connection_OnPiece;
         }
 
-        void Connection_OnRequest(PeerConnection sender, RequestMessage request)
-        {
-            Log($"received request {request.Index}:{request.Begin}");
-            var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
-            var msg = new PieceMessage(request.Index, request.Begin,
-                piece.Skip(request.Begin).Take(request.RequestedLength).ToArray());
-            SendPiece(sender, msg);
-        }
-
-        void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
-        {
-            Log($"received piece {piece.Index},{piece.Begin}");
-            var state = GetConnectionState(sender);
-            state.PieceManager ??= new PieceManager(piece.Index, _torrent.PieceSize);
-            state.PieceManager.Write(piece);
-        }
-
-        TorrentPeerConnectionState GetConnectionState(PeerConnection conn)
-        {
-            return _connections.FirstOrDefault(x => x.Key == conn).Value;
-        }
-        
         private void DownloadThread()
         {
             using var sha1 = new System.Security.Cryptography.SHA1CryptoServiceProvider();
@@ -156,47 +134,40 @@ namespace TorrentBear.Service
                             }
                         }
 
-                        if (state.PieceManager?.CurrentRequestMessage == null && state.IsInterested && !state.IsChoked)
+                        if ((state.PieceManager?.ShouldSendRequest ?? true) && state.IsInterested && !state.IsChoked)
                         {
-                            var exceptPieces = _connections.Values.Select(x => x.PieceManager?.CurrentRequestMessage?.Begin ?? -1)
+                            var exceptPieces = _connections.Values
+                                .Select(x => x.PieceManager?.Piece ?? -1)
                                 .Where(x => x >= 0).ToArray();
                             var random = GetRandomInterest(peer.Bitfield, exceptPieces);
 
-                            var request = new RequestMessage(random, 0);
-                            state.PieceManager ??= new PieceManager(random, _torrent.PieceSize);
-                            state.PieceManager.CurrentRequestMessage = request;
-                            SendRequest(peer, request);
-                        }
-                        else if (state.PieceManager?.CurrentRequestMessage != null && state.PieceManager.IsRequestComplete)
-                        {
-                            if (!state.PieceManager.IsComplete)
+                            state.PieceManager ??= new PieceManager(random, RequestMessage.DefaultRequestLength,
+                                _torrent.PieceSize);
+                            var request = state.PieceManager.GetNextRequest();
+                            if (request != null)
                             {
-                                state.PieceManager.CurrentRequestMessage = state.PieceManager.GetNextRequest();
-                                if (state.PieceManager.CurrentRequestMessage != null)
-                                {
-                                    SendRequest(peer, state.PieceManager.CurrentRequestMessage);
-                                }
+                                state.PieceManager.SendRequest(peer, request);
                             }
-                            else
+                        }
+                        else if (state.PieceManager?.IsPieceComplete ?? false)
+                        {
+                            var torrentPieceHash = _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
+                            var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
+                            var pieceHash = sha1.ComputeHash(pieceBytes);
+                            if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
                             {
-                                var torrentPieceHash = _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
-                                var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
-                                var pieceHash = sha1.ComputeHash(pieceBytes);
-                                if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
+                                WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
+                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece);
+                                var fileSha = sha1.ComputeHash(filePieceBytes);
+                                if (Utils.SequenceEqual(fileSha, torrentPieceHash))
                                 {
-                                    WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
-                                    var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece);
-                                    var fileSha = sha1.ComputeHash(filePieceBytes);
-                                    if (Utils.SequenceEqual(fileSha, torrentPieceHash))
-                                    {
-                                        SendHave(peer, state.PieceManager.Piece);
-                                        _bitfield.Set(state.PieceManager.Piece, true);
-                                        state.PieceManager = null;
-                                    }
-                                    else
-                                    {
-                                        //error writing to file
-                                    }
+                                    SendHave(peer, state.PieceManager.Piece);
+                                    _bitfield.Set(state.PieceManager.Piece, true);
+                                    state.PieceManager = null;
+                                }
+                                else
+                                {
+                                    //error writing to file
                                 }
                             }
                         }
@@ -205,6 +176,28 @@ namespace TorrentBear.Service
 
                 Thread.Sleep(1);
             }
+        }
+
+        void Connection_OnRequest(PeerConnection sender, RequestMessage request)
+        {
+            Log($"received request {request.Index}:{request.Begin}");
+            var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
+            var block = new byte[request.RequestedLength];
+            Buffer.BlockCopy(piece, request.Begin, block, 0, Math.Min(request.RequestedLength, piece.Length));
+            var msg = new PieceMessage(request.Index, request.Begin, block);
+            SendPiece(sender, msg);
+        }
+
+        void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
+        {
+            Log($"received piece {piece.Index},{piece.Begin}");
+            var state = GetConnectionState(sender);
+            state.PieceManager.Write(piece);
+        }
+
+        TorrentPeerConnectionState GetConnectionState(PeerConnection conn)
+        {
+            return _connections.FirstOrDefault(x => x.Key == conn).Value;
         }
 
         private bool CheckInterest(BitArray bitfield)
@@ -238,7 +231,7 @@ namespace TorrentBear.Service
             while (except.Contains(interest[0])) interest.Remove(0);
             var interestArray = interest.ToArray();
             r.Shuffle(interestArray);
-            
+
             return interestArray[0];
         }
 
@@ -282,12 +275,12 @@ namespace TorrentBear.Service
             conn.Write(bytes);
         }
 
-        void SendRequest(PeerConnection conn, RequestMessage request)
-        {
-            Log($"sending request for {request.Index}:{request.Begin}");
-            var bytes = request.GetBytes();
-            conn.Write(bytes);
-        }
+        //void SendRequest(PeerConnection conn, RequestMessage request)
+        //{
+        //    Log($"sending request for {request.Index}:{request.Begin}");
+        //    var bytes = request.GetBytes();
+        //    conn.Write(bytes);
+        //}
 
         void SendPiece(PeerConnection conn, PieceMessage piece)
         {
@@ -332,7 +325,7 @@ namespace TorrentBear.Service
             var files = torrent.Files;
             var offset = pieceSize * piece;
             var bytesWritten = 0;
-            
+
             foreach (var file in files)
             {
                 if (offset - file.FileSize >= 0)
