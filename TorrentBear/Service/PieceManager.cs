@@ -11,7 +11,7 @@ namespace TorrentBear.Service
 {
     public class PieceManager
     {
-        private const int MaxQueueLength = 4;
+        private const int MaxQueueLength = 10;
         public int Piece { get; set; }
         public Stream Stream { get; set; }
         private long _pieceSize;
@@ -40,9 +40,9 @@ namespace TorrentBear.Service
 
         public void SendRequest(PeerConnection conn, RequestMessage request)
         {
-            Debug.WriteLine($"sending request for {request.Index}:{request.Begin}");
+            //Debug.WriteLine($"sending request for {request.Index}:{request.Begin}");
             conn.Write(request.GetBytes());
-            _pendingRequestCache.Set($"request_{request.Index}:{request.Begin}", request, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(10)));
+            _pendingRequestCache.Set($"request_{request.Index}:{request.Begin}", request, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(3)));
         }
 
         public void Write(PieceMessage msg)

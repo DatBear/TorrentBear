@@ -7,6 +7,8 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Caching;
+using System.Runtime.Versioning;
+using System.Security;
 using System.Threading;
 using System.Threading.Tasks;
 using BencodeNET.Parsing;
@@ -99,6 +101,7 @@ namespace TorrentBear.Service
             conn.Piece += Connection_OnPiece;
         }
 
+        private Stopwatch Stopwatch = new();
         private void DownloadThread()
         {
             using var sha1 = new System.Security.Cryptography.SHA1CryptoServiceProvider();
@@ -138,7 +141,7 @@ namespace TorrentBear.Service
 
                         if (!state.IsInterested || state.IsChoked)
                         {
-                            Thread.Sleep(500);
+                            Thread.Sleep(50);
                             continue;
                         }
 
@@ -155,6 +158,8 @@ namespace TorrentBear.Service
                             if (random >= 0)
                             {
                                 state.PieceManager = new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
+                                Stopwatch = new Stopwatch();
+                                Stopwatch.Start();
                             }
                             else
                             {
@@ -172,6 +177,8 @@ namespace TorrentBear.Service
                         }
                         else if (state.PieceManager.IsPieceComplete)
                         {
+                            var ms = Stopwatch.ElapsedMilliseconds;
+                            Log($"completed piece {state.PieceManager.Piece} in {ms}ms");
                             var torrentPieceHash =
                                 _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
                             var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
@@ -206,9 +213,15 @@ namespace TorrentBear.Service
             }
         }
 
-        void Connection_OnRequest(PeerConnection sender, RequestMessage request)
+        
+        public void Connection_OnRequest(PeerConnection sender, RequestMessage request)
         {
-            Log($"received request {request.Index}:{request.Begin}");
+            if (request.Index % 2 == 0)
+            {
+                Debug.Write(" ");//this debug.write speeds up the code significantly
+                //Thread.Sleep(10);
+            }
+            //Log($"received request {request.Index}:{request.Begin}");
             var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
             var length = Math.Min(request.RequestedLength, piece.Length - request.Begin);
             var block = new byte[length];
@@ -216,11 +229,12 @@ namespace TorrentBear.Service
             var msg = new PieceMessage(request.Index, request.Begin, block);
             SendPiece(sender, msg);
         }
-
-        void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
+        
+        public void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
         {
-            Log($"received piece {piece.Index},{piece.Begin}");
+            //Debug.Write(string.Empty);
             var state = GetConnectionState(sender);
+            //Log($"p{piece.Index}:{piece.Begin} {state.PieceManager.Stopwatch.ElapsedMilliseconds}");
             state.PieceManager.Write(piece);
         }
 
@@ -232,7 +246,8 @@ namespace TorrentBear.Service
         private bool CheckInterest(string peerId, BitArray bitfield, bool skipCache = false)
         {
             var cacheKey = $"interest_{peerId}";
-            if (_cache.Contains(cacheKey) && !skipCache) return (bool)_cache.Get(cacheKey);
+            var cacheResult = _cache.Get(cacheKey);
+            if (!skipCache && cacheResult != null) return (bool)cacheResult;
             if (_hasAllPieces) return false;
             if (_bitfield.Length != bitfield.Length) return false;
             for (var i = 0; i < bitfield.Length; i++)
@@ -309,7 +324,7 @@ namespace TorrentBear.Service
 
         void SendPiece(PeerConnection conn, PieceMessage piece)
         {
-            Log($"sending piece {piece.Index}:{piece.Begin}");
+            //($"sending piece {piece.Index}:{piece.Begin}");
             var bytes = piece.GetBytes();
             conn.Write(bytes);
         }

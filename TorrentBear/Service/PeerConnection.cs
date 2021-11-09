@@ -105,10 +105,23 @@ namespace TorrentBear.Service
                     Thread.Sleep(1);
                 }
 
-                while (stream.DataAvailable)
+
+                while (stream.DataAvailable && HandshakeState == PeerHandshakeState.HandshakeAccepted && buffer.Count >= 4)
                 {
-                    buffer.Add((byte)stream.ReadByte());
+                    var ogPacketSize = BitConverter.ToInt32(buffer.ToArray(), 0);
+                    var remainingSize = ogPacketSize - buffer.Count;
+                    if (remainingSize > 0)
+                    {
+                        byteBuffer = new byte[remainingSize];
+                        bytesRead = stream.Read(byteBuffer, 0, byteBuffer.Length);
+                        buffer.AddRange(byteBuffer.Take(bytesRead));
+                    }
+                    else
+                    {
+                        break;
+                    }
                 }
+
 
                 while (true)
                 {
