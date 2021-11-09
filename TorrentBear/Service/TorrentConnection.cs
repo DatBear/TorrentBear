@@ -208,19 +208,12 @@ namespace TorrentBear.Service
                         }
                     }
                 }
-
-                Thread.Sleep(1);
             }
         }
 
         
         public void Connection_OnRequest(PeerConnection sender, RequestMessage request)
         {
-            if (request.Index % 2 == 0)
-            {
-                Debug.Write(" ");//this debug.write speeds up the code significantly
-                //Thread.Sleep(10);
-            }
             //Log($"received request {request.Index}:{request.Begin}");
             var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
             var length = Math.Min(request.RequestedLength, piece.Length - request.Begin);

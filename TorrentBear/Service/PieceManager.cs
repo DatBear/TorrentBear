@@ -38,6 +38,12 @@ namespace TorrentBear.Service
             }
         }
 
+        ~PieceManager()
+        {
+            Stream.Dispose();
+            _pendingRequestCache.Dispose();
+        }
+
         public void SendRequest(PeerConnection conn, RequestMessage request)
         {
             //Debug.WriteLine($"sending request for {request.Index}:{request.Begin}");

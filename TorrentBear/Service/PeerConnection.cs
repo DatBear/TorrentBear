@@ -101,8 +101,6 @@ namespace TorrentBear.Service
                         Die();
                         return;
                     }
-
-                    Thread.Sleep(1);
                 }
 
 
@@ -165,16 +163,20 @@ namespace TorrentBear.Service
             {
                 while (_txPackets.Count > 0)
                 {
-                    var packet = _txPackets.Dequeue();
+                    byte[] packet;
+                    lock (_txPackets)
+                    {
+                        packet = _txPackets.Dequeue();
+                    }
                     Client.GetStream().Write(packet);
                 }
-                Thread.Sleep(1);
             }
         }
 
         public void Write(byte[] bytes)
-        { 
-            _txPackets.Enqueue(bytes);
+        {
+            lock(_txPackets)
+                _txPackets.Enqueue(bytes);
         }
 
         private void HandlePacketThread()
