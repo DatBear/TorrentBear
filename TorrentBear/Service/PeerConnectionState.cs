@@ -1,4 +1,5 @@
-﻿using TorrentBear.Enum;
+﻿using System.Collections;
+using TorrentBear.Enum;
 
 namespace TorrentBear.Service
 {
@@ -15,6 +16,13 @@ namespace TorrentBear.Service
         {
             get => (PeerState & PeerState.Interested) > 0;
             set => PeerState = value ? PeerState | PeerState.Interested : PeerState & ~PeerState.Interested;
-        } 
+        }
+
+        //public BitArray Bitfield { get; set; }
+
+        public PeerConnectionState()
+        {
+            IsChoked = true;
+        }
     }
 }

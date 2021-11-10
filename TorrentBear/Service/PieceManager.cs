@@ -18,13 +18,14 @@ namespace TorrentBear.Service
         public bool IsPieceComplete => Stream.Length >= _pieceSize && _requests.All(x => x.Value);
 
         private Dictionary<RequestMessage, bool> _requests;
-        private MemoryCache _pendingRequestCache = MemoryCache.Default;
+        private MemoryCache _pendingRequestCache;
 
         public PieceManager(int piece, int requestLength, long pieceSize)
         {
             Piece = piece;
             _pieceSize = pieceSize;
             Stream = new MemoryStream();
+            _pendingRequestCache = new MemoryCache($"piece_{piece}_cache");
             _requests = new Dictionary<RequestMessage, bool>();
             int i;
             for (i = 0; i + requestLength <= pieceSize; i += requestLength)
@@ -48,7 +49,7 @@ namespace TorrentBear.Service
         {
             //Debug.WriteLine($"sending request for {request.Index}:{request.Begin}");
             conn.Write(request.GetBytes());
-            _pendingRequestCache.Set($"request_{request.Index}:{request.Begin}", request, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(3)));
+            _pendingRequestCache.Set($"request_{request.Index}:{request.Begin}", request, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(10)));
         }
 
         public void Write(PieceMessage msg)

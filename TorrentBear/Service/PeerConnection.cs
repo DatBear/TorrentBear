@@ -35,12 +35,13 @@ namespace TorrentBear.Service
         public BitArray Bitfield { get; private set; }
         public PeerHandshakeState HandshakeState { get; private set; }
         public PeerConnectionState ConnectionState { get; private set; }
-        
 
-        private byte[] _infoHash;
-        private Queue<List<byte>> _rxPackets;
-        private Queue<byte[]> _txPackets;
-        private AutoResetEvent _packetsReady;
+        
+        private readonly byte[] _infoHash;
+        private readonly Queue<List<byte>> _rxPackets;
+        private readonly Queue<byte[]> _txPackets;
+        private readonly AutoResetEvent _rxPacketsReady;
+        private readonly AutoResetEvent _txPacketsReady;
 
         private delegate void PacketHandler(byte type, List<byte> data);
 
@@ -53,7 +54,8 @@ namespace TorrentBear.Service
 
             _rxPackets = new Queue<List<byte>>();
             _txPackets = new Queue<byte[]>();
-            _packetsReady = new AutoResetEvent(false);
+            _rxPacketsReady = new AutoResetEvent(false);
+            _txPacketsReady = new AutoResetEvent(false);
 
             Task.Run(ReadThread);
             Task.Run(WriteThread);
@@ -89,6 +91,13 @@ namespace TorrentBear.Service
             int bytesRead = 0;
             while (Client.Connected)
             {
+                if (HandshakeState == PeerHandshakeState.HandshakeAccepted)
+                {
+                    if (ConnectionState.IsChoked)
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
                 if (stream.DataAvailable)
                 {
                     bytesRead = stream.Read(byteBuffer, 0, byteBuffer.Length);
@@ -152,7 +161,7 @@ namespace TorrentBear.Service
                         _rxPackets.Enqueue(packet);
                     }
 
-                    _packetsReady.Set();
+                    _rxPacketsReady.Set();
                 }
             }
         }
@@ -161,6 +170,7 @@ namespace TorrentBear.Service
         {
             while (true)
             {
+                _txPacketsReady.WaitOne();
                 while (_txPackets.Count > 0)
                 {
                     byte[] packet;
@@ -177,13 +187,14 @@ namespace TorrentBear.Service
         {
             lock(_txPackets)
                 _txPackets.Enqueue(bytes);
+            _txPacketsReady.Set();
         }
 
         private void HandlePacketThread()
         {
             while (Client.Connected)
             {
-                _packetsReady.WaitOne();
+                _rxPacketsReady.WaitOne();
                 while (_rxPackets.Count > 0)
                 {
                     List<byte> packet;
@@ -248,7 +259,7 @@ namespace TorrentBear.Service
         }
 
         private void HandleChoke(byte type, List<byte> data)
-        {
+        { 
             ConnectionState.IsChoked = true;
         }
 
@@ -259,7 +270,6 @@ namespace TorrentBear.Service
 
         private void HandleInterested(byte type, List<byte> data)
         {
-            //Log("interested");
             ConnectionState.IsInterested = true;
         }
 
@@ -268,10 +278,14 @@ namespace TorrentBear.Service
             ConnectionState.IsInterested = false;
         }
 
+        public delegate void HaveHandler(PeerConnection sender, int have);
+
+        public event HaveHandler Have;
         private void HandleHave(byte type, List<byte> data)
         {
             var index = BitConverter.ToInt32(data.GetRange(5, 4).ToArray());
             Bitfield.Set(index, true);//should it even do this?
+            Have?.Invoke(this, index);
         }
 
         private void HandleBitfield(byte type, List<byte> data)
@@ -318,7 +332,7 @@ namespace TorrentBear.Service
         {
             if (PeerId != null)
             {
-                Debug.WriteLine($"{PeerId[0]:X2}{PeerId[1]:X2}>{str}");
+                Debug.WriteLine($"{PeerId[18]:X2}{PeerId[19]:X2}>{str}");
             }
             else
             {
