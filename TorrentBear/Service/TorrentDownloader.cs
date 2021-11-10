@@ -368,7 +368,7 @@ namespace TorrentBear.Service
                 var filePath = Path.Combine(downloadDirectory, file.FullPath);
                 if (!File.Exists(filePath))
                 {
-                    using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    using var fs = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite);
                     fs.SetLength(file.FileSize);
                 }
             }
@@ -390,7 +390,7 @@ namespace TorrentBear.Service
                 }
 
                 var path = Path.Combine(downloadDirectory, file.FullPath);
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Write);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
                 if (offset > 0)
                 {
                     stream.Seek(offset, SeekOrigin.Begin);
@@ -434,7 +434,7 @@ namespace TorrentBear.Service
                 }
 
                 var path = Path.Combine(downloadDirectory, file.FullPath);
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 if (offset > 0)
                 {
                     stream.Seek(offset, SeekOrigin.Begin);
@@ -471,7 +471,7 @@ namespace TorrentBear.Service
             {
                 var file = torrent.Files[fileIdx];
                 var path = Path.Combine(downloadDirectory, file.FullPath);
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 var prevBytesRead =
                     fileIdx > 0 ? (int)(torrent.Files.Take(fileIdx).Sum(x => x.FileSize) % pieceSize) : 0;
                 int bytesRead;
