@@ -85,10 +85,16 @@ namespace TorrentBear.Service
 
         private void ReadThread()
         {
+            while (!Client.Connected)
+            {
+                Thread.Sleep(100);
+            }
             var stream = Client.GetStream();
             var buffer = new List<byte>();
-            var byteBuffer = new byte[4 * 1024];
+            var byteBuffer = new byte[32 * 1024];
+            var spanBuffer = new Span<byte>(byteBuffer);
             int bytesRead = 0;
+
             while (Client.Connected)
             {
                 if (HandshakeState == PeerHandshakeState.HandshakeAccepted)
@@ -100,18 +106,15 @@ namespace TorrentBear.Service
                 }
                 if (stream.DataAvailable)
                 {
-                    bytesRead = stream.Read(byteBuffer, 0, byteBuffer.Length);
-                    buffer.AddRange(byteBuffer.Take(bytesRead));
-                }
-                else
-                {
-                    if (!Client.Connected)
-                    {
-                        Die();
-                        return;
-                    }
+                    bytesRead = stream.Read(spanBuffer);
+                    buffer.AddRange(byteBuffer[..bytesRead]);
                 }
 
+                if (!Client.Connected)
+                {
+                    Die();
+                    return;
+                }
 
                 while (stream.DataAvailable && HandshakeState == PeerHandshakeState.HandshakeAccepted && buffer.Count >= 4)
                 {
@@ -119,9 +122,9 @@ namespace TorrentBear.Service
                     var remainingSize = ogPacketSize - buffer.Count;
                     if (remainingSize > 0)
                     {
-                        byteBuffer = new byte[remainingSize];
-                        bytesRead = stream.Read(byteBuffer, 0, byteBuffer.Length);
-                        buffer.AddRange(byteBuffer.Take(bytesRead));
+                        spanBuffer = new Span<byte>(byteBuffer, 0, Math.Min(remainingSize, byteBuffer.Length));
+                        bytesRead = stream.Read(spanBuffer);
+                        buffer.AddRange(byteBuffer[..bytesRead]);
                     }
                     else
                     {
@@ -151,8 +154,7 @@ namespace TorrentBear.Service
                     {
                         break;
                     }
-
-                    //Log("received packet");
+                    
                     List<byte> packet =
                         new List<byte>(buffer.GetRange(0, isHandshake ? HandshakeMessage.PacketLength : packetLength + 4));
                     buffer.RemoveRange(0, packet.Count);
