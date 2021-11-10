@@ -244,16 +244,18 @@ namespace TorrentBear.Service
 
         #region Handlers
 
+        public delegate void HandshakeAcceptedHandler(PeerConnection conn);
+
+        public event HandshakeAcceptedHandler HandshakeAccepted;
         private void HandleHandshakeRequest(byte type, List<byte> data)
         {
-            Log("received handshake");
             var hash = data.GetRange(HandshakeMessage.StartBytes().Length, 20);
             var peerId = data.GetRange(HandshakeMessage.StartBytes().Length + 20, 20);
             if (SequenceEqual(hash.ToArray(), _infoHash))
             {
                 PeerId = peerId.ToArray();
                 HandshakeState = PeerHandshakeState.HandshakeAccepted;
-                Log("accepted handshake");
+                HandshakeAccepted?.Invoke(this);
                 return;
             }
 
@@ -286,7 +288,7 @@ namespace TorrentBear.Service
         private void HandleHave(byte type, List<byte> data)
         {
             var index = BitConverter.ToInt32(data.GetRange(5, 4).ToArray());
-            Bitfield.Set(index, true);//should it even do this?
+            Bitfield.Set(index, true);
             Have?.Invoke(this, index);
         }
 

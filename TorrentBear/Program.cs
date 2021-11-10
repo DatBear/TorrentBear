@@ -15,10 +15,11 @@ namespace TorrentBear
         {
             var seederTask = Task.Run(() => new Program().Seeder());
             var leecherTask = Task.Run(() => new Program().Leecher());
-            await Task.WhenAll(seederTask, leecherTask);
+            var leecher2Task = Task.Run(() => new Program().Leecher2());
+            await Task.WhenAll(seederTask, leecherTask, leecher2Task);
             var seeder = await seederTask;
             var leecher = await leecherTask;
-            await seederTask;
+            var leecher2 = await leecher2Task;
             Console.ReadLine();
         }
 
@@ -32,27 +33,37 @@ namespace TorrentBear
         private int _seedPort = 4000;
         private int _leechPort = 4001;
 
-        TorrentConnection Seeder()
+        TorrentDownloader Seeder()
         {
-            var peers = new List<IPEndPoint>
-            {
-                new(IPAddress.Loopback, _leechPort)
-            };
-            var peer = new TorrentConnection("seed", _seedPort, peers, "./Torrent/1.torrent", "./Torrent/1/");
-            Thread.Sleep(5000);
-            peer.Start();
-            return peer;
+            var peers = new List<IPEndPoint>();
+            var downloader = new TorrentDownloader("seed", _seedPort, "./Torrent/1.torrent", "./Torrent/1/");
+            Thread.Sleep(3000);
+            downloader.Start(peers);
+            return downloader;
         }
 
-        TorrentConnection Leecher()
+        TorrentDownloader Leecher()
         {
             var peers = new List<IPEndPoint>
             {
-                new(IPAddress.Loopback, _seedPort)
+                new(IPAddress.Loopback, _seedPort),
+                new(IPAddress.Loopback, _leechPort+2)
             };
-            var peer = new TorrentConnection("leech", _leechPort, peers, "./Torrent/1.torrent", "./downloaded/");
-            Thread.Sleep(5000);
-            peer.Start();
+            var downloader = new TorrentDownloader("leech1", _leechPort, "./Torrent/1.torrent", "./leeched/1/");
+            Thread.Sleep(3000);
+            downloader.Start(peers);
+            return downloader;
+        }
+
+        TorrentDownloader Leecher2()
+        {
+            var peers = new List<IPEndPoint>
+            {
+                new(IPAddress.Loopback, _seedPort),
+            };
+            var peer = new TorrentDownloader("leech2", _leechPort + 2, "./Torrent/1.torrent", "./leeched/2/");
+            Thread.Sleep(3000);
+            peer.Start(peers);
             return peer;
         }
     }

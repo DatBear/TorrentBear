@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Caching;
+using System.Runtime.CompilerServices;
 using System.Runtime.Versioning;
 using System.Security;
 using System.Text;
@@ -22,25 +23,25 @@ namespace TorrentBear.Service
     public class TorrentDownloader
     {
         private const int Version = 1;
-        private static Random r = new();
-        private string _name;
-        private TcpListener _listener;
-        private Dictionary<PeerConnection, TorrentPeerConnectionState> _connections;
-        private int _port;
-        private List<IPEndPoint> _peers;
-        private Torrent _torrent;
-        private string _downloadDirectory;
-        private byte[] _peerId;
-        private BitArray _bitfield;
-        private bool _hasAllPieces;
-        private MemoryCache _cache;
+        private static readonly Random r = new();
+        private readonly string _name;
+        private readonly TcpListener _listener;
+        private readonly int _port;
+        private readonly Torrent _torrent;
+        private readonly string _downloadDirectory;
+        private readonly byte[] _peerId;
+        private readonly BitArray _bitfield;
+        private readonly MemoryCache _cache;
+        private readonly Dictionary<PeerConnection, TorrentPeerConnectionState> _connections;
+        private static readonly Dictionary<string, string> DownloaderPeerNames = new();
+        
 
-        public TorrentDownloader(string name, int port, List<IPEndPoint> peers, string torrentFilePath,
-            string downloadPath)
+        private bool _hasAllPieces;
+
+        public TorrentDownloader(string name, int port, string torrentFilePath, string downloadPath)
         {
             _name = name;
             _port = port;
-            _peers = peers;
             _connections = new Dictionary<PeerConnection, TorrentPeerConnectionState>();
             var randomPeerId = new byte[12];
             r.NextBytes(randomPeerId);
@@ -54,20 +55,38 @@ namespace TorrentBear.Service
             CreateFiles(_torrent, downloadPath);
             _bitfield = GetBitfield(_torrent, downloadPath);
 
+            Console.WriteLine($"[{_peerId[18]:X2}{_peerId[19]:X2}] {_name} started");
+            lock (DownloaderPeerNames)
+            {
+                DownloaderPeerNames[_name] = PeerIdString(_peerId);
+                DownloaderPeerNames[PeerIdString(_peerId)] = _name;
+            }
+            
             _listener = TcpListener.Create(port);
             _listener.Start();
             _listener.BeginAcceptTcpClient(TcpListener_AcceptTcpClient, _listener);
+
         }
 
-        public void Start()
+        private string PeerIdString(byte[] peerId)
         {
-            foreach (var peer in _peers)
+            return BitConverter.ToString(peerId).Replace("-", string.Empty);
+        }
+
+        private string GetName(PeerConnection conn)
+        {
+            return DownloaderPeerNames[conn.PeerIdString];
+        }
+        
+        public void Start(List<IPEndPoint> peers)
+        {
+            foreach (var peer in peers)
             {
+                var client = new TcpClient(new IPEndPoint(IPAddress.Loopback, 0));
                 var endPoint = new IPEndPoint(IPAddress.Loopback, _port);
                 var conn = _connections.FirstOrDefault(x => Equals(x.Key.Endpoint, endPoint)).Key;
                 if (conn == null)
                 {
-                    var client = new TcpClient(new IPEndPoint(IPAddress.Loopback, _port));
                     try
                     {
                         client.Connect(peer);
@@ -75,11 +94,11 @@ namespace TorrentBear.Service
                     }
                     catch (Exception e)
                     {
-                        Debug.WriteLine(e);
+                        Debug.WriteLine($"Error Connecting to {peer}");
                     }
                 }
             }
-
+            
             Task.Run(DownloadThread);
         }
 
@@ -93,13 +112,17 @@ namespace TorrentBear.Service
             }
         }
 
-        private void SetupConnection(TcpClient client)
+        private void SetupConnection(TcpClient client, [CallerMemberName] string caller = null)
         {
+            Debug.WriteLine($"[{caller}] {_name} -> {client.Client?.RemoteEndPoint}");
             var conn = new PeerConnection(client, _torrent.GetInfoHashBytes());
-            _connections.Add(conn, new TorrentPeerConnectionState());
+            lock(_connections)
+                _connections.Add(conn, new TorrentPeerConnectionState());
             conn.Request += Connection_OnRequest;
             conn.Piece += Connection_OnPiece;
             conn.Have += Connection_OnHave;
+            conn.HandshakeAccepted += Connection_OnHandshakeAccepted;
+            
             SendHandshake(conn);
             SendBitfield(conn);
         }
@@ -111,7 +134,11 @@ namespace TorrentBear.Service
 
             while (true)
             {
-                foreach (var kvp in _connections.Where(
+                List<KeyValuePair<PeerConnection, TorrentPeerConnectionState>> connections;
+                lock (_connections)
+                    connections = _connections.ToList();
+
+                foreach (var kvp in connections.Where(
                     x => x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted))
                 {
                     var peer = kvp.Key;
@@ -189,7 +216,7 @@ namespace TorrentBear.Service
                         else if (state.PieceManager.IsPieceComplete)
                         {
                             var ms = Stopwatch.ElapsedMilliseconds;
-                            Log($"completed piece {state.PieceManager.Piece} in {ms}ms");
+                            Log($"{GetName(peer)} [P{state.PieceManager.Piece:D3}], {ms}ms");
                             var torrentPieceHash =
                                 _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
                             var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
@@ -202,21 +229,19 @@ namespace TorrentBear.Service
                                 var fileSha = sha1.ComputeHash(filePieceBytes);
                                 if (Utils.SequenceEqual(fileSha, torrentPieceHash))
                                 {
-                                    SendHave(peer, state.PieceManager.Piece);
+                                    BroadcastHave(state.PieceManager.Piece);
                                     _bitfield.Set(state.PieceManager.Piece, true);
                                     state.PieceManager = null;
                                 }
                                 else
                                 {
-                                    //error writing to file
-                                    Debug.WriteLine($"error writing to file");
+                                    Debug.WriteLine($"Error writing to file");
                                 }
                             }
                             else
                             {
-                                //error downloading piece
                                 state.PieceManager = null;//restart piece download
-                                Debug.WriteLine($"error downloadiing piece {state.PieceManager.Piece}");
+                                Debug.WriteLine($"Error downloading piece {state.PieceManager.Piece}");
                             }
                         }
                     }
@@ -227,7 +252,6 @@ namespace TorrentBear.Service
         
         public void Connection_OnRequest(PeerConnection sender, RequestMessage request)
         {
-            //Log($"received request {request.Index}:{request.Begin}");
             var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
             var length = Math.Min(request.RequestedLength, piece.Length - request.Begin);
             var block = new byte[length];
@@ -238,15 +262,19 @@ namespace TorrentBear.Service
         
         public void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
         {
-            //Debug.Write(string.Empty);
             var state = GetConnectionState(sender);
-            //Log($"p{piece.Index}:{piece.Begin} {state.PieceManager.Stopwatch.ElapsedMilliseconds}");
             state.PieceManager.Write(piece);
         }
 
         public void Connection_OnHave(PeerConnection sender, int have)
         {
             _cache.Remove($"piece_{have}");
+        }
+
+        public void Connection_OnHandshakeAccepted(PeerConnection sender)
+        {
+            var peerName = DownloaderPeerNames[sender.PeerIdString];
+            Debug.WriteLine($"{_name}->{peerName}:{sender.Endpoint.Port} handshake accepted");
         }
 
         TorrentPeerConnectionState GetConnectionState(PeerConnection conn)
@@ -299,7 +327,6 @@ namespace TorrentBear.Service
 
         void SendHandshake(PeerConnection conn)
         {
-            Log("sending handshake");
             var bytes = new HandshakeMessage(_torrent.GetInfoHashBytes(), _peerId).GetBytes();
             conn.Write(bytes);
         }
@@ -313,41 +340,45 @@ namespace TorrentBear.Service
 
         void SendInterested(PeerConnection conn)
         {
-            Log($"interested in {conn.PeerId[18]:X2}{conn.PeerId[19]:X2}");
+            Log($"{GetName(conn)} [I]");
             var bytes = new InterestedMessage().GetBytes();
             conn.Write(bytes);
         }
 
         void SendNotInterested(PeerConnection conn)
         {
-            Log($"not interested in {conn.PeerId[18]:X2}{conn.PeerId[19]:X2}");
+            Log($"{GetName(conn)} [NI]");
             var bytes = new NotInterestedMessage().GetBytes();
             conn.Write(bytes);
         }
 
         void SendChoke(PeerConnection conn)
         {
+            Log($"{GetName(conn)} [C]");
             var bytes = new ChokeMessage().GetBytes();
             conn.Write(bytes);
         }
 
         void SendUnChoke(PeerConnection conn)
         {
+            Log($"{GetName(conn)} [UC]");
             var bytes = new UnChokeMessage().GetBytes();
             conn.Write(bytes);
         }
 
         void SendPiece(PeerConnection conn, PieceMessage piece)
         {
-            //($"sending piece {piece.Index}:{piece.Begin}");
             var bytes = piece.GetBytes();
             conn.Write(bytes);
         }
 
-        void SendHave(PeerConnection conn, int piece)
+        void BroadcastHave(int piece)
         {
             var bytes = new HaveMessage(piece).GetBytes();
-            conn.Write(bytes);
+            foreach(var peer in _connections.Keys)//lock _connections?
+            {
+                peer.Write(bytes);
+            }
         }
 
         private void CreateFiles(Torrent torrent, string downloadDirectory)
@@ -451,7 +482,7 @@ namespace TorrentBear.Service
 
             Array.Resize(ref buffer, totalBytesRead);
             if(!skipCache)
-                _cache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromMinutes(1)));
+                _cache.Set(cacheKey, buffer, DateTimeOffset.Now.Add(TimeSpan.FromSeconds(30)));
             return buffer.ToArray();
         }
 
