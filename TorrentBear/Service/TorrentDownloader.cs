@@ -35,9 +35,9 @@ namespace TorrentBear.Service
         private readonly Dictionary<PeerConnection, TorrentPeerConnectionState> _connections;
         private static readonly Dictionary<string, string> DownloaderPeerNames = new();
         
+        private bool HasAllPieces => !_bitfield.Cast<bool>().Contains(false);
 
-        private bool _hasAllPieces;
-
+        private Timer _bandwidthTimer;
         public TorrentDownloader(string name, int port, string torrentFilePath, string downloadPath)
         {
             _name = name;
@@ -66,6 +66,7 @@ namespace TorrentBear.Service
             _listener.Start();
             _listener.BeginAcceptTcpClient(TcpListener_AcceptTcpClient, _listener);
 
+            _bandwidthTimer = new Timer(OutputInformation, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
         }
 
         private string PeerIdString(byte[] peerId)
@@ -98,7 +99,8 @@ namespace TorrentBear.Service
                     }
                 }
             }
-            
+
+            Task.Run(ManageConnectionStateThread);
             Task.Run(DownloadThread);
         }
 
@@ -115,7 +117,7 @@ namespace TorrentBear.Service
         private void SetupConnection(TcpClient client, [CallerMemberName] string caller = null)
         {
             Debug.WriteLine($"[{caller}] {_name} -> {client.Client?.RemoteEndPoint}");
-            var conn = new PeerConnection(client, _torrent.GetInfoHashBytes());
+            var conn = new PeerConnection(this, client, _torrent.GetInfoHashBytes());
             lock(_connections)
                 _connections.Add(conn, new TorrentPeerConnectionState());
             conn.Request += Connection_OnRequest;
@@ -131,125 +133,175 @@ namespace TorrentBear.Service
         private void DownloadThread()
         {
             using var sha1 = new System.Security.Cryptography.SHA1CryptoServiceProvider();
-
+            
             while (true)
             {
                 List<KeyValuePair<PeerConnection, TorrentPeerConnectionState>> connections;
                 lock (_connections)
                     connections = _connections.ToList();
-
+                
                 foreach (var kvp in connections.Where(
-                    x => x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted))
+                    x => x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted  && x.Key.Bitfield != null))
                 {
                     var peer = kvp.Key;
                     var state = kvp.Value;
-                    if (peer.Bitfield != null)
+                    var peerName = GetName(peer);
+
+                    if (!state.IsInterested)
                     {
-                        var hasInterest = CheckInterest(peer.PeerIdString, peer.Bitfield);
-                        if (hasInterest != state.IsInterested)
+                        Thread.Sleep(100);
+                        continue;
+                    }
+
+                    if (state.PieceManager == null)
+                    {
+                        var exceptPieces = _connections.Values
+                            .Select(x => x.PieceManager?.Piece ?? -1)
+                            .Where(x => x >= 0).ToArray();
+                        var random = GetRandomInterest(peer.Bitfield, exceptPieces);
+
+                        var pieceSize = random == _torrent.NumberOfPieces - 1
+                            ? _torrent.TotalSize % _torrent.PieceSize
+                            : _torrent.PieceSize;
+                        if (random >= 0)
                         {
-                            if (hasInterest)
+                            state.PieceManager = new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
+                            Stopwatch = new Stopwatch();
+                            Stopwatch.Start();
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                    }
+
+                    if ((state.PieceManager.ShouldSendRequest) && !peer.ConnectionState.IsChoked)
+                    {
+                        var request = state.PieceManager.GetNextRequest();
+                        if (request != null)
+                        {
+                            state.PieceManager.SendRequest(peer, request);
+                        }
+                    }
+                    else if (state.PieceManager.IsPieceComplete)
+                    {
+                        var ms = Stopwatch.ElapsedMilliseconds;
+                        Log($"{GetName(peer)} [P{state.PieceManager.Piece:D3}], {ms}ms");
+                        var torrentPieceHash =
+                            _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
+                        var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
+                        var pieceHash = sha1.ComputeHash(pieceBytes);
+                        if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
+                        {
+                            WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
+                            var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece,
+                                true);
+                            var fileSha = sha1.ComputeHash(filePieceBytes);
+                            if (Utils.SequenceEqual(fileSha, torrentPieceHash))
                             {
-                                SendInterested(peer);
-                                state.IsInterested = true;
+                                BroadcastHave(state.PieceManager.Piece);
+                                _bitfield.Set(state.PieceManager.Piece, true);
+                                state.PieceManager = null;
                             }
                             else
                             {
-                                SendNotInterested(peer);
-                                state.IsInterested = false;
-                            }
-                        }
-
-                        if (hasInterest || peer.ConnectionState.IsInterested)
-                        {
-                            if (state.IsChoked)
-                            {
-                                SendUnChoke(peer);
-                                state.IsChoked = false;
+                                Debug.WriteLine($"Error writing to file");
                             }
                         }
                         else
                         {
-                            if (!state.IsChoked)
-                            {
-                                SendChoke(peer);
-                                state.IsChoked = true;
-                            }
-                        }
-
-                        if (!state.IsInterested || state.IsChoked)
-                        {
-                            Thread.Sleep(50);
-                            continue;
-                        }
-
-                        if (state.PieceManager == null)
-                        {
-                            var exceptPieces = _connections.Values
-                                .Select(x => x.PieceManager?.Piece ?? -1)
-                                .Where(x => x >= 0).ToArray();
-                            var random = GetRandomInterest(peer.Bitfield, exceptPieces);
-
-                            var pieceSize = random == _torrent.NumberOfPieces - 1
-                                ? _torrent.TotalSize % _torrent.PieceSize
-                                : _torrent.PieceSize;
-                            if (random >= 0)
-                            {
-                                state.PieceManager = new PieceManager(random, RequestMessage.DefaultRequestLength, pieceSize);
-                                Stopwatch = new Stopwatch();
-                                Stopwatch.Start();
-                            }
-                            else
-                            {
-                                continue;
-                            }
-                        }
-
-                        if ((state.PieceManager.ShouldSendRequest) && state.IsInterested && !state.IsChoked)
-                        {
-                            var request = state.PieceManager.GetNextRequest();
-                            if (request != null)
-                            {
-                                state.PieceManager.SendRequest(peer, request);
-                            }
-                        }
-                        else if (state.PieceManager.IsPieceComplete)
-                        {
-                            var ms = Stopwatch.ElapsedMilliseconds;
-                            Log($"{GetName(peer)} [P{state.PieceManager.Piece:D3}], {ms}ms");
-                            var torrentPieceHash =
-                                _torrent.Pieces.Skip(state.PieceManager.Piece * 20).Take(20).ToArray();
-                            var pieceBytes = state.PieceManager.Stream.ReadAllBytes();
-                            var pieceHash = sha1.ComputeHash(pieceBytes);
-                            if (Utils.SequenceEqual(pieceHash, torrentPieceHash))
-                            {
-                                WritePiece(_torrent, _downloadDirectory, state.PieceManager.Piece, pieceBytes);
-                                var filePieceBytes = GetPiece(_torrent, _downloadDirectory, state.PieceManager.Piece,
-                                    true);
-                                var fileSha = sha1.ComputeHash(filePieceBytes);
-                                if (Utils.SequenceEqual(fileSha, torrentPieceHash))
-                                {
-                                    BroadcastHave(state.PieceManager.Piece);
-                                    _bitfield.Set(state.PieceManager.Piece, true);
-                                    state.PieceManager = null;
-                                }
-                                else
-                                {
-                                    Debug.WriteLine($"Error writing to file");
-                                }
-                            }
-                            else
-                            {
-                                state.PieceManager = null;//restart piece download
-                                Debug.WriteLine($"Error downloading piece {state.PieceManager.Piece}");
-                            }
+                            state.PieceManager = null;//restart piece download
+                            Debug.WriteLine($"Error downloading piece {state.PieceManager.Piece}");
                         }
                     }
                 }
             }
         }
 
-        
+
+        private void OutputInformation(object? asdf = null)
+        {
+            List<KeyValuePair<PeerConnection, TorrentPeerConnectionState>> connections;
+            lock (_connections)
+                connections = _connections.ToList();
+            
+            foreach (var kvp in connections.Where(x =>
+                x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted && x.Key.Bitfield != null))
+            {
+                var peer = kvp.Key;
+                var download = peer.DownloadBandwidth.GetAverageSpeed();
+                var upload = peer.UploadBandwidth.GetAverageSpeed();
+                if (download > 0.01 || upload > 0.01)
+                {
+                    Log($"{GetName(peer)} Down:{peer.DownloadBandwidth.GetAverageSpeed():F1}, Up:{peer.UploadBandwidth.GetAverageSpeed():F1}");
+                }
+            }
+        }
+
+        //this changes who's choked once every 10 seconds
+        //reciprocates by unchoking the 4 best peers based on upload rates (download rates if we have all pieces)
+        //unchokes uninterested peers
+        //todo implement optimistic unchoking (unchoke 1 random peer every 30 seconds, with new connections 3x as likely to start as the optimistic unchoke)
+        private void ManageConnectionStateThread()
+        {
+            while (true)
+            {
+                List<KeyValuePair<PeerConnection, TorrentPeerConnectionState>> connections;
+                lock (_connections)
+                    connections = _connections.Where(x =>
+                        x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted && x.Key.Bitfield != null).ToList();
+
+                foreach (var kvp in connections.Where(
+                    x => x.Key.HandshakeState == PeerHandshakeState.HandshakeAccepted && x.Key.Bitfield != null))
+                {
+                    var peer = kvp.Key;
+                    var state = kvp.Value;
+
+                    var hasInterest = CheckInterest(peer.PeerIdString, peer.Bitfield);
+                    if (hasInterest != state.IsInterested)
+                    {
+                        if (hasInterest)
+                        {
+                            SendInterested(peer);
+                            state.IsInterested = true;
+                        }
+                        else
+                        {
+                            SendNotInterested(peer);
+                            state.IsInterested = false;
+                        }
+                    }
+                }
+
+                var bestInterestedPeers = connections.Where(x => x.Key.ConnectionState.IsInterested)
+                    .OrderByDescending(x => HasAllPieces ? x.Key.UploadBandwidth.GetAverageSpeed() : x.Key.DownloadBandwidth.GetAverageSpeed()).Take(4);
+                var uninterestedPeers = connections.Where(x => !x.Key.ConnectionState.IsInterested);
+
+                var peersToUnchoke = bestInterestedPeers.Concat(uninterestedPeers);
+                var peersNeedingUnchoke = peersToUnchoke.Where(x => x.Value.IsChoked);
+                var peersNeedingChoke = connections.Except(peersToUnchoke).Where(x => !x.Value.IsChoked);
+
+                foreach (var kvp in peersNeedingUnchoke)
+                {
+                    var peer = kvp.Key;
+                    var state = kvp.Value;
+                    SendUnChoke(peer);
+                    state.IsChoked = false;
+                }
+
+                foreach (var kvp in peersNeedingChoke)
+                {
+                    var peer = kvp.Key;
+                    var state = kvp.Value;
+                    SendChoke(peer);
+                    state.IsChoked = true;
+                }
+
+                Thread.Sleep(10000);
+            }
+        }
+
+
         public void Connection_OnRequest(PeerConnection sender, RequestMessage request)
         {
             var piece = GetPiece(_torrent, _downloadDirectory, request.Index);
@@ -262,7 +314,7 @@ namespace TorrentBear.Service
         
         public void Connection_OnPiece(PeerConnection sender, PieceMessage piece)
         {
-            var state = GetConnectionState(sender);
+            var state = GetPeerState(sender);
             state.PieceManager.Write(piece);
         }
 
@@ -277,9 +329,10 @@ namespace TorrentBear.Service
             Debug.WriteLine($"{_name}->{peerName}:{sender.Endpoint.Port} handshake accepted");
         }
 
-        TorrentPeerConnectionState GetConnectionState(PeerConnection conn)
+        public TorrentPeerConnectionState GetPeerState(PeerConnection peer)
         {
-            return _connections.FirstOrDefault(x => x.Key == conn).Value;
+            lock (_connections)
+                return _connections[peer];
         }
 
         private bool CheckInterest(string peerId, BitArray bitfield, bool skipCache = false)
@@ -290,7 +343,7 @@ namespace TorrentBear.Service
             {
                 return (bool)cacheResult;
             }
-            if (_hasAllPieces) return false;
+            if (HasAllPieces) return false;
             if (_bitfield.Length != bitfield.Length) return false;
             for (var i = 0; i < bitfield.Length; i++)
             {
@@ -307,7 +360,7 @@ namespace TorrentBear.Service
 
         private int GetRandomInterest(BitArray bitfield, params int[] except)
         {
-            if (_hasAllPieces) return -1;
+            if (HasAllPieces) return -1;
             if (_bitfield.Length != bitfield.Length) return -1;
             var interest = new List<int>();
             for (var i = 0; i < bitfield.Length; i++)

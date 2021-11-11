@@ -35,7 +35,10 @@ namespace TorrentBear.Service
         public BitArray Bitfield { get; private set; }
         public PeerHandshakeState HandshakeState { get; private set; }
         public PeerConnectionState ConnectionState { get; private set; }
-
+        //public TorrentPeerConnectionState ConnectionState => _downloader.GetPeerState(this);
+        private TorrentDownloader _downloader;
+        public BandwidthMonitor DownloadBandwidth { get; set; }
+        public BandwidthMonitor UploadBandwidth { get; set; }
         
         private readonly byte[] _infoHash;
         private readonly Queue<List<byte>> _rxPackets;
@@ -45,11 +48,14 @@ namespace TorrentBear.Service
 
         private delegate void PacketHandler(byte type, List<byte> data);
 
-        public PeerConnection(TcpClient client, byte[] infoHash)
+        public PeerConnection(TorrentDownloader downloader, TcpClient client, byte[] infoHash)
         {
+            _downloader = downloader;
             _infoHash = infoHash;
             Endpoint = client.Client.RemoteEndPoint as IPEndPoint;
             ConnectionState = new PeerConnectionState();
+            DownloadBandwidth = new();
+            UploadBandwidth = new();
             Client = client;
 
             _rxPackets = new Queue<List<byte>>();
@@ -97,16 +103,15 @@ namespace TorrentBear.Service
 
             while (Client.Connected)
             {
-                if (HandshakeState == PeerHandshakeState.HandshakeAccepted)
+                if (HandshakeState == PeerHandshakeState.HandshakeAccepted &&
+                    !ConnectionState.IsInterested && !(_downloader.GetPeerState(this)?.IsInterested ?? false))
                 {
-                    if (ConnectionState.IsChoked)
-                    {
-                        Thread.Sleep(100);
-                    }
+                    Thread.Sleep(100);
                 }
                 if (stream.DataAvailable)
                 {
                     bytesRead = stream.Read(spanBuffer);
+                    DownloadBandwidth?.AddBytes(bytesRead);
                     buffer.AddRange(byteBuffer[..bytesRead]);
                 }
 
@@ -124,6 +129,7 @@ namespace TorrentBear.Service
                     {
                         spanBuffer = new Span<byte>(byteBuffer, 0, Math.Min(remainingSize, byteBuffer.Length));
                         bytesRead = stream.Read(spanBuffer);
+                        DownloadBandwidth?.AddBytes(bytesRead);
                         buffer.AddRange(byteBuffer[..bytesRead]);
                     }
                     else
@@ -138,11 +144,10 @@ namespace TorrentBear.Service
                     int packetLength = 0;
                     if (buffer.Count >= 4)
                         packetLength = BitConverter.ToInt32(buffer.ToArray(), 0);
-                    var handshakeStartLength = HandshakeMessage.StartBytes().Length;
                     var isHandshake = HandshakeState == PeerHandshakeState.PreHandshake &&
                                       buffer.Count >= HandshakeMessage.PacketLength &&
                                       HandshakeMessage.StartBytes()
-                                          .SequenceEqual(buffer.Take(handshakeStartLength).ToArray());
+                                          .SequenceEqual(buffer.Take(HandshakeMessage.StartBytes().Length).ToArray());
                     var isKeepAlive = buffer.Count >= 4 && packetLength == 0;
 
                     if (isKeepAlive)
@@ -181,6 +186,7 @@ namespace TorrentBear.Service
                         packet = _txPackets.Dequeue();
                     }
                     Client.GetStream().Write(packet);
+                    UploadBandwidth?.AddBytes(packet.Length);
                 }
             }
         }
@@ -265,11 +271,15 @@ namespace TorrentBear.Service
         private void HandleChoke(byte type, List<byte> data)
         { 
             ConnectionState.IsChoked = true;
+            DownloadBandwidth.Stop();
+            UploadBandwidth.Stop();
         }
 
         private void HandleUnChoke(byte type, List<byte> data)
         {
             ConnectionState.IsChoked = false;
+            DownloadBandwidth.Start();
+            UploadBandwidth.Start();
         }
 
         private void HandleInterested(byte type, List<byte> data)
