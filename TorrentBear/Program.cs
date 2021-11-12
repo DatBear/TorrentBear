@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using BencodeNET.Parsing;
 using BencodeNET.Torrents;
+using TorrentBear.Enum;
 using TorrentBear.Service;
 
 namespace TorrentBear
@@ -13,13 +15,29 @@ namespace TorrentBear
     {
         static async Task Main(string[] args)
         {
-            var seederTask = Task.Run(() => new Program().Seeder());
-            var leecherTask = Task.Run(() => new Program().Leecher());
-            var leecher2Task = Task.Run(() => new Program().Leecher2());
-            await Task.WhenAll(seederTask, leecherTask, leecher2Task);
-            var seeder = await seederTask;
-            var leecher = await leecherTask;
-            var leecher2 = await leecher2Task;
+            var torrentFilePath = "./Torrent/1.torrent";
+            var seedDownloadPath = "./Torrent/1/";
+            var seederTasks = new List<Task<TorrentDownloader>>();
+            var leecherTasks = new List<Task<TorrentDownloader>>();
+            var peers = new List<IPEndPoint>();
+            for (var i = 0; i < 1; i++)
+            {
+                var idx = i;
+                var task = Task.Run(() => new Program().Downloader($"seed {idx + 1}", _seedPort + idx, torrentFilePath, seedDownloadPath, new List<IPEndPoint>()));
+                seederTasks.Add(task);
+                peers.Add(new IPEndPoint(IPAddress.Loopback, _seedPort + idx));
+            }
+
+            for (var i = 0; i < 2; i++)
+            {
+                var idx = i;
+                var task = Task.Run(() =>
+                    new Program().Downloader($"leech{idx + 1}", _leechPort + idx, torrentFilePath, $"./leeched/{idx + 1}/", peers.ToList()));
+                leecherTasks.Add(task);
+                peers.Add(new IPEndPoint(IPAddress.Loopback, _leechPort + idx));
+            }
+
+            await Task.WhenAll(seederTasks.Concat(leecherTasks));
             Console.ReadLine();
         }
 
@@ -30,41 +48,16 @@ namespace TorrentBear
             Console.ReadLine();
         }
 
-        private int _seedPort = 4000;
-        private int _leechPort = 4001;
+        private static int _seedPort = 4000;
+        private static int _leechPort = 4100;
 
-        TorrentDownloader Seeder()
+        TorrentDownloader Downloader(string name, int port, string torrentPath, string downloadPath, List<IPEndPoint> peers)
         {
-            var peers = new List<IPEndPoint>();
-            var downloader = new TorrentDownloader("seed", _seedPort, "./Torrent/1.torrent", "./Torrent/1/");
+            var downloader = new TorrentDownloader(name, port, torrentPath, downloadPath, BitfieldType.Full);
             Thread.Sleep(3000);
             downloader.Start(peers);
             return downloader;
         }
-
-        TorrentDownloader Leecher()
-        {
-            var peers = new List<IPEndPoint>
-            {
-                new(IPAddress.Loopback, _seedPort),
-                new(IPAddress.Loopback, _leechPort+2)
-            };
-            var downloader = new TorrentDownloader("leech1", _leechPort, "./Torrent/1.torrent", "./leeched/1/");
-            Thread.Sleep(3000);
-            downloader.Start(peers);
-            return downloader;
-        }
-
-        TorrentDownloader Leecher2()
-        {
-            var peers = new List<IPEndPoint>
-            {
-                new(IPAddress.Loopback, _seedPort),
-            };
-            var peer = new TorrentDownloader("leech2", _leechPort + 2, "./Torrent/1.torrent", "./leeched/2/");
-            Thread.Sleep(3000);
-            peer.Start(peers);
-            return peer;
-        }
+        
     }
 }
