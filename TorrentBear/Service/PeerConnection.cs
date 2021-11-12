@@ -35,7 +35,6 @@ namespace TorrentBear.Service
         public BitArray Bitfield { get; private set; }
         public PeerHandshakeState HandshakeState { get; private set; }
         public PeerConnectionState ConnectionState { get; private set; }
-        //public TorrentPeerConnectionState ConnectionState => _downloader.GetPeerState(this);
         private TorrentDownloader _downloader;
         public BandwidthMonitor DownloadBandwidth { get; set; }
         public BandwidthMonitor UploadBandwidth { get; set; }
@@ -88,7 +87,7 @@ namespace TorrentBear.Service
 
             HandshakeState = PeerHandshakeState.Disconnected;
         }
-
+        
         private void ReadThread()
         {
             while (!Client.Connected)
@@ -106,7 +105,7 @@ namespace TorrentBear.Service
                 if (HandshakeState == PeerHandshakeState.HandshakeAccepted &&
                     !ConnectionState.IsInterested && !(_downloader.GetPeerState(this)?.IsInterested ?? false))
                 {
-                    Thread.Sleep(100);
+                    Thread.Sleep(1);
                 }
                 if (stream.DataAvailable)
                 {
